@@ -8,7 +8,7 @@ const c = @cImport({
 const OffscreenBuffer = struct {
     texture: ?*c.SDL_Texture,
     frect: c.SDL_FRect,
-    pixels: []u32,
+    pixels: ?[]u32,
     width: i32,
     height: i32,
     pitch: i32,
@@ -80,15 +80,15 @@ pub fn resizeTexture(
     if (buffer.texture != null) {
         c.SDL_DestroyTexture(buffer.texture);
     }
-    if (buffer.pixels.len > 0) {
-        allocator.free(buffer.pixels);
+    if (buffer.pixels != null) {
+        allocator.free(buffer.pixels.?);
     }
 
     buffer.width = width;
     buffer.height = height;
     buffer.bytes_per_pixel = 4;
     const buffer_memory_size: usize = @intCast(buffer.width * buffer.height * buffer.bytes_per_pixel);
-    buffer.pixels = allocator.alloc(u32, buffer_memory_size) catch unreachable;
+    buffer.pixels = allocator.alloc(u32, buffer_memory_size) catch unreachable; //TODO: handle out of memory
     buffer.pitch = buffer.width * buffer.bytes_per_pixel;
     buffer.frect = c.SDL_FRect{
         .x = 0.0,
@@ -105,8 +105,9 @@ pub fn resizeTexture(
     );
 }
 
-pub fn renderWeirdGradient(x_offset: i32, y_offset: i32) void {
-    var row: [*]u8 = @ptrCast(global_backbuffer.pixels);
+pub fn renderWeirdGradient(x_offset: i32, y_offset: i32) !void {
+    if(global_backbuffer.pixels == null) return error.BackBufferPixelsNotInitialized;
+    var row: [*]u8 = @ptrCast(global_backbuffer.pixels.?);
     var y: i32 = 0;
     while (y < global_backbuffer.height) : (y += 1) {
         var pixel: [*]u8 = row;
@@ -134,9 +135,10 @@ pub fn updateWindow(
     renderer: ?*c.SDL_Renderer,
     buffer: *OffscreenBuffer,
 ) void {
+    if(buffer.pixels == null) unreachable;
     _ = window;
     _ = c.SDL_RenderClear(renderer);
-    _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.pixels.ptr, @as(c_int, buffer.pitch));
+    _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.pixels.?.ptr, @as(c_int, buffer.pitch));
     _ = c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect);
     _ = c.SDL_RenderPresent(renderer);
 }
@@ -161,10 +163,9 @@ pub fn main() !void {
         return error.SDLWindowCreationFailed;
     }
 
-    const monitor_refresh_hz = getMonitorRefreshRate(window);
-    const game_update_hz: f32 = @floatFromInt(@divTrunc(monitor_refresh_hz, 2));
-    const target_seconds_per_frame: f32 = 1 / game_update_hz;
-    _ = target_seconds_per_frame;
+    // const monitor_refresh_hz = getMonitorRefreshRate(window);
+    // const game_update_hz: f32 = @floatFromInt(@divTrunc(monitor_refresh_hz, 2));
+    // const target_seconds_per_frame: f32 = 1 / game_update_hz;
 
     const renderer = c.SDL_CreateRenderer(window, null);
     defer c.SDL_DestroyRenderer(renderer);
@@ -176,8 +177,8 @@ pub fn main() !void {
 
     var dim = WindowDimension{ .x = 0, .y = 0, .width = 1280, .height = 720 };
     resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
-    defer if (global_backbuffer.pixels.len > 0) {
-        allocator.free(global_backbuffer.pixels);
+    defer if (global_backbuffer.pixels != null) {
+        allocator.free(global_backbuffer.pixels.?);
     };
 
     global_running = true;
@@ -195,7 +196,7 @@ pub fn main() !void {
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     dim = getWindowDimension(window);
                     resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
-                    std.debug.print("Window Resized\n Width: {d}\n  Height: {d}\n", .{ e.window.data1, e.window.data2 });
+                    std.debug.print("[Resized]: w = {d} h = {d}\n", .{ e.window.data1, e.window.data2 });
                 },
                 else => {},
             }
@@ -204,7 +205,7 @@ pub fn main() !void {
             continue;
         }
 
-        renderWeirdGradient(x_offset, y_offset);
+        try renderWeirdGradient(x_offset, y_offset);
         x_offset += 1;
         y_offset += 1;
         updateWindow(window, renderer, &global_backbuffer);
