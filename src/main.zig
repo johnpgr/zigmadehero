@@ -70,9 +70,11 @@ pub fn getSecondsElapsed(start: u64, end: u64) f32 {
     return @as(f32, @floatFromInt(end - start)) / global_perf_count_frequency;
 }
 
-pub fn handleEvents(allocator: std.mem.Allocator, window: ?*c.SDL_Window, renderer: ?*c.SDL_Renderer) void {
-    var event: c.SDL_Event = undefined;
-    while (c.SDL_PollEvent(&event)) {
+pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) void {
+    const window = c.SDL_GetWindowFromID(event.window.windowID);
+    const renderer = c.SDL_GetRenderer(window);
+
+    while (c.SDL_PollEvent(event)) {
         switch (event.type) {
             c.SDL_EVENT_QUIT => {
                 global_running = false;
@@ -202,7 +204,8 @@ pub fn main() !void {
     var x_offset: i32 = 0;
     var y_offset: i32 = 0;
     while (global_running) {
-        handleEvents(allocator, window, renderer);
+        var event: c.SDL_Event = undefined;
+        handleEvent(allocator, &event);
 
         if (global_pause) {
             continue;
@@ -210,7 +213,7 @@ pub fn main() !void {
 
         try renderWeirdGradient(&global_backbuffer, x_offset, y_offset);
         x_offset += 1;
-        y_offset += 1;
+        y_offset += 2;
         renderBufferToWindow(&global_backbuffer, renderer);
     }
 }
