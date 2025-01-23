@@ -70,6 +70,23 @@ pub fn getSecondsElapsed(start: u64, end: u64) f32 {
     return @as(f32, @floatFromInt(end - start)) / global_perf_count_frequency;
 }
 
+pub fn handleEvents(allocator: std.mem.Allocator, window: ?*c.SDL_Window, renderer: ?*c.SDL_Renderer) void {
+    var event: c.SDL_Event = undefined;
+    while (c.SDL_PollEvent(&event)) {
+        switch (event.type) {
+            c.SDL_EVENT_QUIT => {
+                global_running = false;
+            },
+            c.SDL_EVENT_WINDOW_RESIZED => {
+                const dim = getWindowDimension(window);
+                resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
+                std.debug.print("[Resized]: w = {d} h = {d}\n", .{ event.window.data1, event.window.data2 });
+            },
+            else => {},
+        }
+    }
+}
+
 pub fn resizeTexture(
     allocator: std.mem.Allocator,
     buffer: *OffscreenBuffer,
@@ -105,14 +122,14 @@ pub fn resizeTexture(
     );
 }
 
-pub fn renderWeirdGradient(x_offset: i32, y_offset: i32) !void {
-    if(global_backbuffer.pixels == null) return error.BackBufferPixelsNotInitialized;
-    var row: [*]u8 = @ptrCast(global_backbuffer.pixels.?);
+pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: i32, y_offset: i32) !void {
+    if (buffer.pixels == null) return error.BackBufferPixelsNotInitialized;
+    var row: [*]u8 = @ptrCast(buffer.pixels.?);
     var y: i32 = 0;
-    while (y < global_backbuffer.height) : (y += 1) {
+    while (y < buffer.height) : (y += 1) {
         var pixel: [*]u8 = row;
         var x: i32 = 0;
-        while (x < global_backbuffer.width) : (x += 1) {
+        while (x < buffer.width) : (x += 1) {
             // Blue - repeats every 256 pixels
             pixel[0] = @intCast((x + x_offset) & 0xFF);
             pixel += 1;
@@ -126,17 +143,15 @@ pub fn renderWeirdGradient(x_offset: i32, y_offset: i32) !void {
             pixel[0] = 255;
             pixel += 1;
         }
-        row += @as(usize, @intCast(global_backbuffer.pitch));
+        row += @as(usize, @intCast(buffer.pitch));
     }
 }
 
-pub fn updateWindow(
-    window: ?*c.SDL_Window,
-    renderer: ?*c.SDL_Renderer,
+pub fn renderBufferToWindow(
     buffer: *OffscreenBuffer,
+    renderer: ?*c.SDL_Renderer,
 ) void {
-    if(buffer.pixels == null) unreachable;
-    _ = window;
+    if (buffer.pixels == null) unreachable;
     _ = c.SDL_RenderClear(renderer);
     _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.pixels.?.ptr, @as(c_int, buffer.pitch));
     _ = c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect);
@@ -163,7 +178,7 @@ pub fn main() !void {
         return error.SDLWindowCreationFailed;
     }
 
-    // const monitor_refresh_hz = getMonitorRefreshRate(window);
+    // const monitor_refresh_hz = getMonitorRefreshRate();
     // const game_update_hz: f32 = @floatFromInt(@divTrunc(monitor_refresh_hz, 2));
     // const target_seconds_per_frame: f32 = 1 / game_update_hz;
 
@@ -175,7 +190,7 @@ pub fn main() !void {
     }
     _ = c.SDL_SetRenderVSync(renderer, c.SDL_RENDERER_VSYNC_ADAPTIVE);
 
-    var dim = WindowDimension{ .x = 0, .y = 0, .width = 1280, .height = 720 };
+    const dim = getWindowDimension(window);
     resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
     defer if (global_backbuffer.pixels != null) {
         allocator.free(global_backbuffer.pixels.?);
@@ -187,27 +202,15 @@ pub fn main() !void {
     var x_offset: i32 = 0;
     var y_offset: i32 = 0;
     while (global_running) {
-        var e: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&e)) {
-            switch (e.type) {
-                c.SDL_EVENT_QUIT => {
-                    global_running = false;
-                },
-                c.SDL_EVENT_WINDOW_RESIZED => {
-                    dim = getWindowDimension(window);
-                    resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
-                    std.debug.print("[Resized]: w = {d} h = {d}\n", .{ e.window.data1, e.window.data2 });
-                },
-                else => {},
-            }
-        }
+        handleEvents(allocator, window, renderer);
+
         if (global_pause) {
             continue;
         }
 
-        try renderWeirdGradient(x_offset, y_offset);
+        try renderWeirdGradient(&global_backbuffer, x_offset, y_offset);
         x_offset += 1;
         y_offset += 1;
-        updateWindow(window, renderer, &global_backbuffer);
+        renderBufferToWindow(&global_backbuffer, renderer);
     }
 }
