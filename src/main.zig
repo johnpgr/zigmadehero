@@ -22,12 +22,18 @@ const WindowDimension = struct {
     height: i32,
 };
 
+//constants
+const MAX_CONTROLLER_HANDLES = 4;
+
+//global variables
 var global_running: bool = undefined;
 var global_pause: bool = undefined;
 var global_backbuffer: OffscreenBuffer = undefined;
 var global_perf_count_frequency: u64 = undefined;
+var global_controller_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Gamepad = undefined;
+var global_rumble_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Haptic = undefined;
 
-pub fn sharedLibExt() []u8 {
+pub fn getSharedLibExt() []u8 {
     switch (builtin.target.os.tag) {
         .windows => return "dll",
         .macos => return "dylib",
@@ -56,11 +62,11 @@ pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
 
 pub fn getMonitorRefreshRate(window: ?*c.SDL_Window) i32 {
     const display_id = c.SDL_GetDisplayForWindow(window);
-    const mode = c.SDL_GetDesktopDisplayMode(display_id);
+    const mode = c.SDL_GetDesktopDisplayMode(display_id).*;
     var result: i32 = 60;
     if (mode != null) {
-        if (mode.*.refresh_rate > 0) {
-            result = @intFromFloat(mode.*.refresh_rate);
+        if (mode.refresh_rate > 0) {
+            result = @intFromFloat(mode.refresh_rate);
         }
     }
     return result;
@@ -70,9 +76,51 @@ pub fn getSecondsElapsed(start: u64, end: u64) f32 {
     return @as(f32, @floatFromInt(end - start)) / global_perf_count_frequency;
 }
 
+pub fn openGamepads() void {
+    var c_max_joysticks: c_int = undefined;
+    const joystick_ids = c.SDL_GetJoysticks(&c_max_joysticks);
+    defer c.SDL_free(joystick_ids);
+
+    const max_joysticks: u32 = @intCast(c_max_joysticks);
+    var gamepad_index: u32 = 0;
+    while (gamepad_index < max_joysticks) : (gamepad_index += 1) {
+        if (!c.SDL_IsGamepad(gamepad_index)) {
+            continue;
+        }
+        if (gamepad_index >= MAX_CONTROLLER_HANDLES) {
+            break;
+        }
+
+        global_controller_handles[gamepad_index] = c.SDL_OpenGamepad(gamepad_index);
+        global_rumble_handles[gamepad_index] = c.SDL_OpenHaptic(gamepad_index);
+
+        const rumble_did_init = c.SDL_InitHapticRumble(global_rumble_handles[gamepad_index]);
+        if (global_rumble_handles[gamepad_index] != null and rumble_did_init) {
+            c.SDL_CloseHaptic(global_rumble_handles[gamepad_index]);
+            global_rumble_handles[gamepad_index] = null;
+        }
+
+        gamepad_index += 1;
+    }
+}
+
+pub fn closeGamepads() void {
+    var i: u32 = 0;
+    while (i < MAX_CONTROLLER_HANDLES) : (i += 1) {
+        if (global_rumble_handles[i] != null) {
+            c.SDL_CloseHaptic(global_rumble_handles[i]);
+            global_rumble_handles[i] = null;
+        }
+
+        if (global_controller_handles[i] != null) {
+            c.SDL_CloseGamepad(global_controller_handles[i]);
+            global_controller_handles[i] = null;
+        }
+    }
+}
+
 pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) void {
     const window = c.SDL_GetWindowFromID(event.window.windowID);
-    const renderer = c.SDL_GetRenderer(window);
 
     while (c.SDL_PollEvent(event)) {
         switch (event.type) {
@@ -81,6 +129,7 @@ pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) void {
             },
             c.SDL_EVENT_WINDOW_RESIZED => {
                 const dim = getWindowDimension(window);
+                const renderer = c.SDL_GetRenderer(window);
                 resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
                 std.debug.print("[Resized]: w = {d} h = {d}\n", .{ event.window.data1, event.window.data2 });
             },
