@@ -52,6 +52,7 @@ pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
     _ = c.SDL_GetWindowSize(window, &w, &h);
     _ = c.SDL_GetWindowPosition(window, &x, &y);
 
+
     result.x = x;
     result.y = y;
     result.width = w;
@@ -119,18 +120,17 @@ pub fn closeGamepads() void {
     }
 }
 
-pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) void {
-    const window = c.SDL_GetWindowFromID(event.window.windowID);
-
+pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
     while (c.SDL_PollEvent(event)) {
         switch (event.type) {
             c.SDL_EVENT_QUIT => {
                 global_running = false;
             },
             c.SDL_EVENT_WINDOW_RESIZED => {
+                const window = c.SDL_GetWindowFromID(event.window.windowID);
                 const dim = getWindowDimension(window);
                 const renderer = c.SDL_GetRenderer(window);
-                resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
+                try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
                 std.debug.print("[Resized]: w = {d} h = {d}\n", .{ event.window.data1, event.window.data2 });
             },
             else => {},
@@ -144,7 +144,7 @@ pub fn resizeTexture(
     renderer: ?*c.SDL_Renderer,
     width: i32,
     height: i32,
-) void {
+) !void {
     if (buffer.texture != null) {
         c.SDL_DestroyTexture(buffer.texture);
     }
@@ -156,7 +156,7 @@ pub fn resizeTexture(
     buffer.height = height;
     buffer.bytes_per_pixel = 4;
     const buffer_memory_size: usize = @intCast(buffer.width * buffer.height * buffer.bytes_per_pixel);
-    buffer.pixels = allocator.alloc(u32, buffer_memory_size) catch unreachable; //TODO: handle out of memory
+    buffer.pixels = try allocator.alloc(u32, buffer_memory_size);
     buffer.pitch = buffer.width * buffer.bytes_per_pixel;
     buffer.frect = c.SDL_FRect{
         .x = 0.0,
@@ -242,7 +242,7 @@ pub fn main() !void {
     _ = c.SDL_SetRenderVSync(renderer, c.SDL_RENDERER_VSYNC_ADAPTIVE);
 
     const dim = getWindowDimension(window);
-    resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
+    try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
     defer if (global_backbuffer.pixels != null) {
         allocator.free(global_backbuffer.pixels.?);
     };
@@ -254,7 +254,7 @@ pub fn main() !void {
     var y_offset: i32 = 0;
     while (global_running) {
         var event: c.SDL_Event = undefined;
-        handleEvent(allocator, &event);
+        try handleEvent(allocator, &event);
 
         if (global_pause) {
             continue;

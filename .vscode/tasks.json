@@ -7,7 +7,16 @@
             "command": "zig build -Doptimize=ReleaseFast",
             "group": {
                 "kind": "build",
-                "isDefault": true
+                "isDefault": false
+            }
+        },
+        {
+            "label": "build debug",
+            "type": "shell",
+            "command": "zig build -Doptimize=Debug",
+            "group": {
+                "kind": "build",
+                "isDefault": false
             }
         },
         {
@@ -16,7 +25,7 @@
             "command": "zig test",
             "group": {
                 "kind": "test",
-                "isDefault": true
+                "isDefault": false
             }
         },
         {
@@ -24,7 +33,8 @@
             "type": "shell",
             "command": "zig build run",
             "group": {
-                "kind": "none"
+                "kind": "none",
+                "isDefault": true
             }
         }
     ]
