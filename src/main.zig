@@ -8,7 +8,7 @@ const c = @cImport({
 const OffscreenBuffer = struct {
     texture: ?*c.SDL_Texture,
     frect: c.SDL_FRect,
-    pixels: ?[]u32,
+    memory: ?[]u32,
     width: i32,
     height: i32,
     pitch: i32,
@@ -51,7 +51,6 @@ pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
 
     _ = c.SDL_GetWindowSize(window, &w, &h);
     _ = c.SDL_GetWindowPosition(window, &x, &y);
-
 
     result.x = x;
     result.y = y;
@@ -148,15 +147,15 @@ pub fn resizeTexture(
     if (buffer.texture != null) {
         c.SDL_DestroyTexture(buffer.texture);
     }
-    if (buffer.pixels != null) {
-        allocator.free(buffer.pixels.?);
+    if (buffer.memory != null) {
+        allocator.free(buffer.memory.?);
     }
 
     buffer.width = width;
     buffer.height = height;
     buffer.bytes_per_pixel = 4;
     const buffer_memory_size: usize = @intCast(buffer.width * buffer.height * buffer.bytes_per_pixel);
-    buffer.pixels = try allocator.alloc(u32, buffer_memory_size);
+    buffer.memory = try allocator.alloc(u32, buffer_memory_size);
     buffer.pitch = buffer.width * buffer.bytes_per_pixel;
     buffer.frect = c.SDL_FRect{
         .x = 0.0,
@@ -173,26 +172,26 @@ pub fn resizeTexture(
     );
 }
 
-pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: i32, y_offset: i32) !void {
-    if (buffer.pixels == null) return error.BackBufferPixelsNotInitialized;
-    var row: [*]u8 = @ptrCast(buffer.pixels.?);
-    var y: i32 = 0;
+pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: u32, y_offset: u32) !void {
+    var row: [*]u8 = @ptrCast(buffer.memory orelse return error.BackBufferPixelsNotInitialized);
+    var y: u32 = 0;
     while (y < buffer.height) : (y += 1) {
         var pixel: [*]u8 = row;
-        var x: i32 = 0;
+        var x: u32 = 0;
         while (x < buffer.width) : (x += 1) {
-            // Blue - repeats every 256 pixels
-            pixel[0] = @intCast((x + x_offset) & 0xFF);
-            pixel += 1;
-            // Green - repeats every 256 pixels
-            pixel[0] = @intCast((y + y_offset) & 0xFF);
-            pixel += 1;
-            // Red
-            pixel[0] = 0;
-            pixel += 1;
-            // Alpha
-            pixel[0] = 255;
-            pixel += 1;
+            const blue: u8 = @truncate(@as(u32, @intCast(x + x_offset)));
+            const green: u8 = @truncate(@as(u32, @intCast(y + y_offset)));
+            const red: u8 = 0;
+            const alpha: u8 = 255;
+
+            const color: u32 = (@as(u32, alpha) << 24) |
+                (@as(u32, red) << 16) |
+                (@as(u32, green) << 8) |
+                (@as(u32, blue));
+
+            const pixel_u32: [*]u32 = @alignCast(@ptrCast(pixel));
+            pixel_u32[0] = color;
+            pixel += 4;
         }
         row += @as(usize, @intCast(buffer.pitch));
     }
@@ -202,9 +201,9 @@ pub fn renderBufferToWindow(
     buffer: *OffscreenBuffer,
     renderer: ?*c.SDL_Renderer,
 ) void {
-    if (buffer.pixels == null) unreachable;
+    if (buffer.memory == null) unreachable;
     _ = c.SDL_RenderClear(renderer);
-    _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.pixels.?.ptr, @as(c_int, buffer.pitch));
+    _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.memory.?.ptr, @as(c_int, buffer.pitch));
     _ = c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect);
     _ = c.SDL_RenderPresent(renderer);
 }
@@ -243,15 +242,15 @@ pub fn main() !void {
 
     const dim = getWindowDimension(window);
     try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
-    defer if (global_backbuffer.pixels != null) {
-        allocator.free(global_backbuffer.pixels.?);
+    defer if (global_backbuffer.memory != null) {
+        allocator.free(global_backbuffer.memory.?);
     };
 
     global_running = true;
     global_pause = false;
 
-    var x_offset: i32 = 0;
-    var y_offset: i32 = 0;
+    var x_offset: u32 = 0;
+    var y_offset: u32 = 0;
     while (global_running) {
         var event: c.SDL_Event = undefined;
         try handleEvent(allocator, &event);
