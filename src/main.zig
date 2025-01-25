@@ -28,10 +28,14 @@ const MAX_CONTROLLER_HANDLES = 4;
 //global variables
 var global_running: bool = undefined;
 var global_pause: bool = undefined;
+var global_game_width: i32 = 1280;
+var global_game_height: i32 = 720;
 var global_backbuffer: OffscreenBuffer = undefined;
 var global_perf_count_frequency: u64 = undefined;
 var global_controller_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Gamepad = undefined;
 var global_rumble_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Haptic = undefined;
+var global_x_offset: u32 = 0;
+var global_y_offset: u32 = 0;
 
 pub fn getSharedLibExt() []u8 {
     switch (builtin.target.os.tag) {
@@ -40,6 +44,19 @@ pub fn getSharedLibExt() []u8 {
         .linux => return "so",
         else => @compileError("UNSUPPORTED OS"),
     }
+}
+
+pub fn handleResolutionChange(allocator: std.mem.Allocator, renderer: ?*c.SDL_Renderer) !void {
+    const resolutions = [_]struct { w: i32, h: i32 }{
+        .{ .w = 1280, .h = 720 },
+        .{ .w = 1920, .h = 1080 },
+        .{ .w = 2560, .h = 1440 },
+        .{ .w = 3840, .h = 2160 },
+    };
+
+    //TODO: Display in-game ui to select resolution
+    // Hardcoded a single value for now
+    try resizeTexture(allocator, &global_backbuffer, renderer, resolutions[1].w, resolutions[1].h);
 }
 
 pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
@@ -76,7 +93,7 @@ pub fn getSecondsElapsed(start: u64, end: u64) f32 {
     return @as(f32, @floatFromInt(end - start)) / global_perf_count_frequency;
 }
 
-pub fn openGamepads() void {
+pub fn initGamepads() void {
     var c_max_joysticks: c_int = undefined;
     const joystick_ids = c.SDL_GetJoysticks(&c_max_joysticks);
     defer c.SDL_free(joystick_ids);
@@ -104,7 +121,7 @@ pub fn openGamepads() void {
     }
 }
 
-pub fn closeGamepads() void {
+pub fn deinitGamepads() void {
     var i: u32 = 0;
     while (i < MAX_CONTROLLER_HANDLES) : (i += 1) {
         if (global_rumble_handles[i] != null) {
@@ -125,11 +142,39 @@ pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
             c.SDL_EVENT_QUIT => {
                 global_running = false;
             },
+            c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
+                const key = event.key.key;
+                const mod = event.key.mod;
+                const down = event.key.down;
+                const repeat = event.key.repeat;
+                _ = repeat;
+                _ = mod;
+
+                switch (key) {
+                    c.SDLK_P => {
+                        if (down) {
+                            global_pause = !global_pause;
+                        }
+                    },
+                    c.SDLK_R => {
+                        if (down) {
+                            const window = c.SDL_GetWindowFromEvent(event);
+                            const renderer = c.SDL_GetRenderer(window);
+                            if (renderer == null) {
+                                continue;
+                            }
+                            try handleResolutionChange(allocator, renderer);
+                        }
+                    },
+                    c.SDLK_ESCAPE => {},
+                    else => {},
+                }
+            },
             c.SDL_EVENT_WINDOW_RESIZED => {
-                const window = c.SDL_GetWindowFromID(event.window.windowID);
-                const dim = getWindowDimension(window);
-                const renderer = c.SDL_GetRenderer(window);
-                try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
+                // const window = c.SDL_GetWindowFromID(event.window.windowID);
+                // const dim = getWindowDimension(window);
+                // const renderer = c.SDL_GetRenderer(window);
+                // try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
                 std.debug.print("[Resized]: w = {d} h = {d}\n", .{ event.window.data1, event.window.data2 });
             },
             else => {},
@@ -144,25 +189,21 @@ pub fn resizeTexture(
     width: i32,
     height: i32,
 ) !void {
+    global_game_width = width;
+    global_game_height = height;
+
     if (buffer.texture != null) {
         c.SDL_DestroyTexture(buffer.texture);
     }
     if (buffer.memory != null) {
         allocator.free(buffer.memory.?);
     }
-
     buffer.width = width;
     buffer.height = height;
     buffer.bytes_per_pixel = 4;
     const buffer_memory_size: usize = @intCast(buffer.width * buffer.height * buffer.bytes_per_pixel);
     buffer.memory = try allocator.alloc(u32, buffer_memory_size);
     buffer.pitch = buffer.width * buffer.bytes_per_pixel;
-    buffer.frect = c.SDL_FRect{
-        .x = 0.0,
-        .y = 0.0,
-        .w = @floatFromInt(buffer.width),
-        .h = @floatFromInt(buffer.height),
-    };
     buffer.texture = c.SDL_CreateTexture(
         renderer,
         c.SDL_PIXELFORMAT_ARGB8888,
@@ -170,6 +211,7 @@ pub fn resizeTexture(
         @as(c_int, buffer.width),
         @as(c_int, buffer.height),
     );
+    _ = c.SDL_SetTextureScaleMode(buffer.texture, c.SDL_SCALEMODE_NEAREST);
 }
 
 pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: u32, y_offset: u32) !void {
@@ -200,8 +242,16 @@ pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: u32, y_offset: u3
 pub fn renderBufferToWindow(
     buffer: *OffscreenBuffer,
     renderer: ?*c.SDL_Renderer,
+    window: ?*c.SDL_Window,
 ) void {
-    if (buffer.memory == null) unreachable;
+    if (buffer.memory == null) unreachable; //TODO: Log error
+
+    var window_w: c_int = 0;
+    var window_h: c_int = 0;
+    _ = c.SDL_GetWindowSize(window, &window_w, &window_h);
+    buffer.frect.w = @floatFromInt(window_w);
+    buffer.frect.h = @floatFromInt(window_h);
+
     _ = c.SDL_RenderClear(renderer);
     _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.memory.?.ptr, @as(c_int, buffer.pitch));
     _ = c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect);
@@ -221,7 +271,12 @@ pub fn main() !void {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("Zigmade Hero", 1280, 720, c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE);
+    const window = c.SDL_CreateWindow(
+        "Zigmade Hero",
+        1280,
+        720,
+        c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE,
+    );
     defer c.SDL_DestroyWindow(window);
     if (window == null) {
         std.debug.print("Could not create window: {s}\n", .{c.SDL_GetError()});
@@ -249,8 +304,6 @@ pub fn main() !void {
     global_running = true;
     global_pause = false;
 
-    var x_offset: u32 = 0;
-    var y_offset: u32 = 0;
     while (global_running) {
         var event: c.SDL_Event = undefined;
         try handleEvent(allocator, &event);
@@ -259,9 +312,8 @@ pub fn main() !void {
             continue;
         }
 
-        try renderWeirdGradient(&global_backbuffer, x_offset, y_offset);
-        x_offset += 1;
-        y_offset += 2;
-        renderBufferToWindow(&global_backbuffer, renderer);
+        try renderWeirdGradient(&global_backbuffer, global_x_offset, global_y_offset);
+        global_x_offset += 1;
+        renderBufferToWindow(&global_backbuffer, renderer, window);
     }
 }
