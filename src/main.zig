@@ -235,19 +235,24 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("Hello, World!\n", .{});
-
     try sdlResult(c.SDL_Init(c.SDL_INIT_VIDEO));
     defer c.SDL_Quit();
 
     sdlResult(c.SDL_SetHint(c.SDL_HINT_RENDER_VSYNC, "1")) catch {
-        std.debug.print("[WARN]: Could not set VSYNC!", .{});
+        c.SDL_LogWarn(c.SDL_LOG_CATEGORY_APPLICATION, "Could not set VSYNC!");
     };
 
     const window: *c.SDL_Window, const renderer: *c.SDL_Renderer = create_window_and_renderer: {
         var window: ?*c.SDL_Window = null;
         var renderer: ?*c.SDL_Renderer = null;
-        try sdlResult(c.SDL_CreateWindowAndRenderer("Zigmade hero", INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT, 0, &window, &renderer));
+        try sdlResult(c.SDL_CreateWindowAndRenderer(
+            "Zigmade hero",
+            INITIAL_WINDOW_WIDTH,
+            INITIAL_WINDOW_HEIGHT,
+            c.SDL_WINDOW_RESIZABLE,
+            &window,
+            &renderer,
+        ));
         errdefer comptime unreachable;
 
         break :create_window_and_renderer .{ window.?, renderer.? };
@@ -255,7 +260,6 @@ pub fn main() !void {
 
     defer c.SDL_DestroyRenderer(renderer);
     defer c.SDL_DestroyWindow(window);
-
 
     const dim = getWindowDimension(window);
     try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);

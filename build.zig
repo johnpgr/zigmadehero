@@ -16,11 +16,15 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "zig-sdl3",
+        .name = "zigmadehero",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    if(target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
 
     const sdl_dep = b.dependency("sdl", .{
         .target = target,

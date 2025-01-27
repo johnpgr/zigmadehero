@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build release",
+            "label": "build (release)",
             "type": "shell",
             "command": "zig build -Doptimize=ReleaseFast",
             "group": {
@@ -11,7 +11,7 @@
             }
         },
         {
-            "label": "build debug",
+            "label": "build (debug)",
             "type": "shell",
             "command": "zig build -Doptimize=Debug",
             "group": {
@@ -35,6 +35,24 @@
             "group": {
                 "kind": "none",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "build windows",
+            "type": "shell",
+            "command": "zig build -Dtarget=x86_64-windows",
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            }
+        },
+        {
+            "label": "build windows (release)",
+            "type": "shell",
+            "command": "zig build -Dtarget=x86_64-windows -Doptimize=ReleaseFast",
+            "group": {
+                "kind": "build",
+                "isDefault": false
             }
         }
     ]
