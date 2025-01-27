@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const c = @cImport({
+    @cDefine("SDL_DISABLE_OLD_NAMES", {});
     @cInclude("SDL3/SDL.h");
 });
 
@@ -22,22 +23,40 @@ const WindowDimension = struct {
     height: i32,
 };
 
-//constants
-const MAX_CONTROLLER_HANDLES = 4;
+const INITIAL_WINDOW_WIDTH = 1280;
+const INITIAL_WINDOW_HEIGHT = 720;
 
-//global variables
-var global_running: bool = undefined;
-var global_pause: bool = undefined;
-var global_game_width: i32 = 1280;
-var global_game_height: i32 = 720;
-var global_backbuffer: OffscreenBuffer = undefined;
-var global_perf_count_frequency: u64 = undefined;
-var global_controller_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Gamepad = undefined;
-var global_rumble_handles: [MAX_CONTROLLER_HANDLES]?*c.SDL_Haptic = undefined;
+var global_game_width: i32 = 0;
+var global_game_height: i32 = 0;
+var global_perf_count_frequency: u64 = 0;
+var global_running: bool = true;
+var global_pause: bool = false;
 var global_x_offset: u32 = 0;
 var global_y_offset: u32 = 0;
+var global_backbuffer: OffscreenBuffer = undefined;
 
-pub fn getSharedLibExt() []u8 {
+/// Converts the return value of an SDL function to an error union.
+inline fn sdlResult(value: anytype) error{SdlError}!switch (@import("shims.zig").typeInfo(@TypeOf(value))) {
+    .bool => void,
+    .pointer, .optional => @TypeOf(value.?),
+    .int => |info| switch (info.signedness) {
+        .signed => @TypeOf(@max(0, value)),
+        .unsigned => @TypeOf(value),
+    },
+    else => @compileError("unerrifiable type: " ++ @typeName(@TypeOf(value))),
+} {
+    return switch (@import("shims.zig").typeInfo(@TypeOf(value))) {
+        .bool => if (!value) error.SdlError,
+        .pointer, .optional => value orelse error.SdlError,
+        .int => |info| switch (info.signedness) {
+            .signed => if (value >= 0) @max(0, value) else error.SdlError,
+            .unsigned => if (value != 0) value else error.SdlError,
+        },
+        else => comptime unreachable,
+    };
+}
+
+pub fn getSharedLibExt() []const u8 {
     switch (builtin.target.os.tag) {
         .windows => return "dll",
         .macos => return "dylib",
@@ -46,7 +65,7 @@ pub fn getSharedLibExt() []u8 {
     }
 }
 
-pub fn handleResolutionChange(allocator: std.mem.Allocator, renderer: ?*c.SDL_Renderer) !void {
+pub fn handleResolutionChange(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, back_buffer: *OffscreenBuffer) !void {
     const resolutions = [_]struct { w: i32, h: i32 }{
         .{ .w = 1280, .h = 720 },
         .{ .w = 1920, .h = 1080 },
@@ -56,18 +75,18 @@ pub fn handleResolutionChange(allocator: std.mem.Allocator, renderer: ?*c.SDL_Re
 
     //TODO: Display in-game ui to select resolution
     // Hardcoded a single value for now
-    try resizeTexture(allocator, &global_backbuffer, renderer, resolutions[1].w, resolutions[1].h);
+    try resizeTexture(allocator, back_buffer, renderer, resolutions[1].w, resolutions[1].h);
 }
 
-pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
+pub fn getWindowDimension(window: *c.SDL_Window) WindowDimension {
     var result: WindowDimension = undefined;
     var x: c_int = undefined;
     var y: c_int = undefined;
     var w: c_int = undefined;
     var h: c_int = undefined;
 
-    _ = c.SDL_GetWindowSize(window, &w, &h);
-    _ = c.SDL_GetWindowPosition(window, &x, &y);
+    sdlResult(c.SDL_GetWindowSize(window, &w, &h)) catch {};
+    sdlResult(c.SDL_GetWindowPosition(window, &x, &y)) catch {};
 
     result.x = x;
     result.y = y;
@@ -77,7 +96,7 @@ pub fn getWindowDimension(window: ?*c.SDL_Window) WindowDimension {
     return result;
 }
 
-pub fn getMonitorRefreshRate(window: ?*c.SDL_Window) i32 {
+pub fn getMonitorRefreshRate(window: *c.SDL_Window) i32 {
     const display_id = c.SDL_GetDisplayForWindow(window);
     const mode = c.SDL_GetDesktopDisplayMode(display_id).*;
     var result: i32 = 60;
@@ -91,49 +110,6 @@ pub fn getMonitorRefreshRate(window: ?*c.SDL_Window) i32 {
 
 pub fn getSecondsElapsed(start: u64, end: u64) f32 {
     return @as(f32, @floatFromInt(end - start)) / global_perf_count_frequency;
-}
-
-pub fn initGamepads() void {
-    var c_max_joysticks: c_int = undefined;
-    const joystick_ids = c.SDL_GetJoysticks(&c_max_joysticks);
-    defer c.SDL_free(joystick_ids);
-
-    const max_joysticks: u32 = @intCast(c_max_joysticks);
-    var gamepad_index: u32 = 0;
-    while (gamepad_index < max_joysticks) : (gamepad_index += 1) {
-        if (!c.SDL_IsGamepad(gamepad_index)) {
-            continue;
-        }
-        if (gamepad_index >= MAX_CONTROLLER_HANDLES) {
-            break;
-        }
-
-        global_controller_handles[gamepad_index] = c.SDL_OpenGamepad(gamepad_index);
-        global_rumble_handles[gamepad_index] = c.SDL_OpenHaptic(gamepad_index);
-
-        const rumble_did_init = c.SDL_InitHapticRumble(global_rumble_handles[gamepad_index]);
-        if (global_rumble_handles[gamepad_index] != null and rumble_did_init) {
-            c.SDL_CloseHaptic(global_rumble_handles[gamepad_index]);
-            global_rumble_handles[gamepad_index] = null;
-        }
-
-        gamepad_index += 1;
-    }
-}
-
-pub fn deinitGamepads() void {
-    var i: u32 = 0;
-    while (i < MAX_CONTROLLER_HANDLES) : (i += 1) {
-        if (global_rumble_handles[i] != null) {
-            c.SDL_CloseHaptic(global_rumble_handles[i]);
-            global_rumble_handles[i] = null;
-        }
-
-        if (global_controller_handles[i] != null) {
-            c.SDL_CloseGamepad(global_controller_handles[i]);
-            global_controller_handles[i] = null;
-        }
-    }
 }
 
 pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
@@ -159,11 +135,8 @@ pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
                     c.SDLK_R => {
                         if (down) {
                             const window = c.SDL_GetWindowFromEvent(event);
-                            const renderer = c.SDL_GetRenderer(window);
-                            if (renderer == null) {
-                                continue;
-                            }
-                            try handleResolutionChange(allocator, renderer);
+                            const renderer = c.SDL_GetRenderer(window) orelse continue;
+                            try handleResolutionChange(allocator, renderer, &global_backbuffer);
                         }
                     },
                     c.SDLK_ESCAPE => {},
@@ -175,7 +148,6 @@ pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
                 // const dim = getWindowDimension(window);
                 // const renderer = c.SDL_GetRenderer(window);
                 // try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
-                std.debug.print("[Resized]: w = {d} h = {d}\n", .{ event.window.data1, event.window.data2 });
             },
             else => {},
         }
@@ -185,7 +157,7 @@ pub fn handleEvent(allocator: std.mem.Allocator, event: *c.SDL_Event) !void {
 pub fn resizeTexture(
     allocator: std.mem.Allocator,
     buffer: *OffscreenBuffer,
-    renderer: ?*c.SDL_Renderer,
+    renderer: *c.SDL_Renderer,
     width: i32,
     height: i32,
 ) !void {
@@ -214,6 +186,25 @@ pub fn resizeTexture(
     _ = c.SDL_SetTextureScaleMode(buffer.texture, c.SDL_SCALEMODE_NEAREST);
 }
 
+pub fn renderBufferToWindow(
+    buffer: *OffscreenBuffer,
+    renderer: *c.SDL_Renderer,
+    window: *c.SDL_Window,
+) void {
+    if (buffer.memory == null) unreachable; //TODO: Log error
+
+    var window_w: c_int = 0;
+    var window_h: c_int = 0;
+    sdlResult(c.SDL_GetWindowSize(window, &window_w, &window_h)) catch {};
+    buffer.frect.w = @floatFromInt(window_w);
+    buffer.frect.h = @floatFromInt(window_h);
+
+    sdlResult(c.SDL_RenderClear(renderer)) catch {};
+    sdlResult(c.SDL_UpdateTexture(buffer.texture, null, buffer.memory.?.ptr, @as(c_int, buffer.pitch))) catch {};
+    sdlResult(c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect)) catch {};
+    sdlResult(c.SDL_RenderPresent(renderer)) catch {};
+}
+
 pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: u32, y_offset: u32) !void {
     var row: [*]u8 = @ptrCast(buffer.memory orelse return error.BackBufferPixelsNotInitialized);
     var y: u32 = 0;
@@ -239,71 +230,41 @@ pub fn renderWeirdGradient(buffer: *OffscreenBuffer, x_offset: u32, y_offset: u3
     }
 }
 
-pub fn renderBufferToWindow(
-    buffer: *OffscreenBuffer,
-    renderer: ?*c.SDL_Renderer,
-    window: ?*c.SDL_Window,
-) void {
-    if (buffer.memory == null) unreachable; //TODO: Log error
-
-    var window_w: c_int = 0;
-    var window_h: c_int = 0;
-    _ = c.SDL_GetWindowSize(window, &window_w, &window_h);
-    buffer.frect.w = @floatFromInt(window_w);
-    buffer.frect.h = @floatFromInt(window_h);
-
-    _ = c.SDL_RenderClear(renderer);
-    _ = c.SDL_UpdateTexture(buffer.texture, null, buffer.memory.?.ptr, @as(c_int, buffer.pitch));
-    _ = c.SDL_RenderTexture(renderer, buffer.texture, null, &buffer.frect);
-    _ = c.SDL_RenderPresent(renderer);
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    global_perf_count_frequency = @as(u64, c.SDL_GetPerformanceFrequency());
+    std.debug.print("Hello, World!\n", .{});
 
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
-        std.debug.print("SDL3 Init Error: {s}\n", .{c.SDL_GetError()});
-        return error.SDLInitializationFailed;
-    }
+    try sdlResult(c.SDL_Init(c.SDL_INIT_VIDEO));
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow(
-        "Zigmade Hero",
-        1280,
-        720,
-        c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE,
-    );
-    defer c.SDL_DestroyWindow(window);
-    if (window == null) {
-        std.debug.print("Could not create window: {s}\n", .{c.SDL_GetError()});
-        return error.SDLWindowCreationFailed;
-    }
+    sdlResult(c.SDL_SetHint(c.SDL_HINT_RENDER_VSYNC, "1")) catch {
+        std.debug.print("[WARN]: Could not set VSYNC!", .{});
+    };
 
-    // const monitor_refresh_hz = getMonitorRefreshRate();
-    // const game_update_hz: f32 = @floatFromInt(@divTrunc(monitor_refresh_hz, 2));
-    // const target_seconds_per_frame: f32 = 1 / game_update_hz;
+    const window: *c.SDL_Window, const renderer: *c.SDL_Renderer = create_window_and_renderer: {
+        var window: ?*c.SDL_Window = null;
+        var renderer: ?*c.SDL_Renderer = null;
+        try sdlResult(c.SDL_CreateWindowAndRenderer("Zigmade hero", INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT, 0, &window, &renderer));
+        errdefer comptime unreachable;
 
-    const renderer = c.SDL_CreateRenderer(window, null);
+        break :create_window_and_renderer .{ window.?, renderer.? };
+    };
+
     defer c.SDL_DestroyRenderer(renderer);
-    if (renderer == null) {
-        std.debug.print("Could not create renderer: {s}\n", .{c.SDL_GetError()});
-        return error.SDLRendererCreationFailed;
-    }
-    _ = c.SDL_SetRenderVSync(renderer, c.SDL_RENDERER_VSYNC_ADAPTIVE);
+    defer c.SDL_DestroyWindow(window);
+
 
     const dim = getWindowDimension(window);
     try resizeTexture(allocator, &global_backbuffer, renderer, dim.width, dim.height);
+
     defer if (global_backbuffer.memory != null) {
         allocator.free(global_backbuffer.memory.?);
     };
 
-    global_running = true;
-    global_pause = false;
-
+    //main_loop
     while (global_running) {
         var event: c.SDL_Event = undefined;
         try handleEvent(allocator, &event);
