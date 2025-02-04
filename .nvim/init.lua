@@ -12,3 +12,13 @@ ls.add_snippets("zig", {
     t("));"),
   }),
 })
+
+ls.add_snippets("zig", {
+    s("fcast", {
+        t("@as("),
+        i(1, "type"),
+        t(", @floatFromInt("),
+        i(2, "value"),
+        t("));"),
+    }),
+})
